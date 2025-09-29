@@ -19,17 +19,16 @@ import {
   query,
   orderBy
 } from 'firebase/firestore';
-import { getStorage } from 'firebase/storage';
-import { Users, FileText, Bell, LogOut, Trash2, Edit, Plus, X, Check, Phone, Search, Filter, TrendingUp, Calendar, Image as ImageIcon, Mail } from 'lucide-react';
+import { Users, FileText, Bell, LogOut, Trash2, Edit, Plus, X, Check, Phone, Search, Filter, TrendingUp, Calendar, Upload } from 'lucide-react';
+import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
 const firebaseConfig = {
-  apiKey: "AIzaSyDk4pU2oEaRpx_hajUzIVrzzpSR0GtcwMA",
-  authDomain: "ethnogram-1cd0f.firebaseapp.com",
-  projectId: "ethnogram-1cd0f",
-  storageBucket: "ethnogram-1cd0f.appspot.com",
-  messagingSenderId: "316785912727",
-  appId: "1:316785912727:web:43818038dc12d5af3532d2",
-  measurementId: "G-0L6Y649070"
+  apiKey: process.env.REACT_APP_FIREBASE_API_KEY,
+  authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN,
+  projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID,
+  storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID,
+  appId: process.env.REACT_APP_FIREBASE_APP_ID
 };
 
 const app = initializeApp(firebaseConfig);
@@ -38,9 +37,9 @@ const db = getFirestore(app);
 const storage = getStorage(app);
 
 const POST_TYPES = {
-  0: { label: 'Обычный', color: 'bg-blue-100 text-blue-700' },
-  1: { label: 'VIP', color: 'bg-purple-100 text-purple-700' },
-  2: { label: 'Премиум', color: 'bg-amber-100 text-amber-700' }
+  0: { label: 'Новость', color: 'bg-blue-100 text-blue-700', icon: '📰' },
+  1: { label: 'Событие', color: 'bg-green-100 text-green-700', icon: '📅' },
+  2: { label: 'Реклама', color: 'bg-amber-100 text-amber-700', icon: '📢' }
 };
 
 export default function AdminPanel() {
@@ -48,13 +47,11 @@ export default function AdminPanel() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('posts');
-  
   const [phoneNumber, setPhoneNumber] = useState('');
   const [verificationCode, setVerificationCode] = useState('');
   const [confirmationResult, setConfirmationResult] = useState(null);
   const [loginError, setLoginError] = useState('');
   const [loginStep, setLoginStep] = useState('phone');
-
   const [posts, setPosts] = useState([]);
   const [users, setUsers] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
@@ -69,10 +66,20 @@ export default function AdminPanel() {
     type: 0,
     authorPhone: '',
     postValidUntil: '',
-    promotedUntil: ''
+    promotedUntil: '',
+    promoDetails: {
+      discount: 0,
+      validUntil: ''
+    },
+    eventDetails: {
+      location: '',
+      startTime: '',
+      endTime: ''
+    }
   });
   const [notification, setNotification] = useState({ title: '', message: '' });
   const [showNotificationForm, setShowNotificationForm] = useState(false);
+  const [uploadingImage, setUploadingImage] = useState(false);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
@@ -225,6 +232,42 @@ export default function AdminPanel() {
     setConfirmationResult(null);
   };
 
+    const handleImageUpload = async (file) => {
+      if (!file) return null;
+      setUploadingImage(true);
+      try {
+        const fileExtension = file.name.split('.').pop();
+        const fileName = `${Date.now()}_${Math.random().toString(36).substring(7)}.${fileExtension}`;
+        const storageRef = ref(storage, `post_images/${fileName}`);
+        await uploadBytes(storageRef, file);
+        const downloadURL = await getDownloadURL(storageRef);
+        setUploadingImage(false);
+        return downloadURL;
+      } catch (error) {
+        console.error('Error uploading image:', error);
+        alert('Ошибка загрузки изображения');
+        setUploadingImage(false);
+        return null;
+      }
+    };
+  
+    const handleImageChange = async (e, isEditing = false) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      if (!file.type.startsWith('image/')) {
+        alert('Пожалуйста, выберите изображение');
+        return;
+      }
+      const imageUrl = await handleImageUpload(file);
+      if (imageUrl) {
+        if (isEditing) {
+          setEditingPost({ ...editingPost, imageUrl });
+        } else {
+          setNewPost({ ...newPost, imageUrl });
+        }
+      }
+    };
+
   const handleDeletePost = async (postId) => {
     if (window.confirm('Удалить этот пост?')) {
       await deleteDoc(doc(db, 'posts', postId));
@@ -233,45 +276,77 @@ export default function AdminPanel() {
   };
 
   const handleUpdatePost = async (postId, updatedData) => {
-    const dataToUpdate = {
-      ...updatedData,
-      updated: new Date()
-    };
-    await updateDoc(doc(db, 'posts', postId), dataToUpdate);
-    setEditingPost(null);
-    loadData();
-  };
+     const dataToUpdate = {
+       title: updatedData.title,
+       description: updatedData.description,
+       imageUrl: updatedData.imageUrl || '',
+       authorPhone: updatedData.authorPhone || '',
+       type: parseInt(updatedData.type),
+       updated: new Date()
+     };
+     if (parseInt(updatedData.type) === 1 && updatedData.eventDetails) {
+       dataToUpdate.eventDetails = {
+         location: updatedData.eventDetails.location || '',
+         startTime: updatedData.eventDetails.startTime || null,
+         endTime: updatedData.eventDetails.endTime || null
+       };
+     } else {
+       dataToUpdate.eventDetails = null;
+     }
+     if (parseInt(updatedData.type) === 2 && updatedData.promoDetails) {
+       dataToUpdate.promoDetails = {
+         discount: parseInt(updatedData.promoDetails.discount) || 0,
+         validUntil: updatedData.promoDetails.validUntil || null
+       };
+     } else {
+       dataToUpdate.promoDetails = null;
+     }
+     await updateDoc(doc(db, 'posts', postId), dataToUpdate);
+     setEditingPost(null);
+     loadData();
+   };
 
   const handleAddPost = async () => {
-    if (!newPost.title || !newPost.description) {
-      alert('Заполните обязательные поля: заголовок и описание');
-      return;
-    }
-    
-    const postData = {
-      ...newPost,
-      created: new Date(),
-      updated: new Date(),
-      authorId: user.uid,
-      likeList: [],
-      type: parseInt(newPost.type),
-      postValidUntil: newPost.postValidUntil ? new Date(newPost.postValidUntil) : null,
-      promotedUntil: newPost.promotedUntil ? new Date(newPost.promotedUntil) : null
-    };
-    
-    await addDoc(collection(db, 'posts'), postData);
-    setShowAddPost(false);
-    setNewPost({
-      title: '',
-      description: '',
-      imageUrl: '',
-      type: 0,
-      authorPhone: '',
-      postValidUntil: '',
-      promotedUntil: ''
-    });
-    loadData();
-  };
+     if (!newPost.title || !newPost.description) {
+       alert('Заполните обязательные поля');
+       return;
+     }
+     const postData = {
+       title: newPost.title,
+       description: newPost.description,
+       imageUrl: newPost.imageUrl || '',
+       created: new Date(),
+       updated: new Date(),
+       authorId: user.uid,
+       authorPhone: newPost.authorPhone || '',
+       likeList: [],
+       type: parseInt(newPost.type),
+       postValidUntil: newPost.postValidUntil ? new Date(newPost.postValidUntil) : null,
+       promotedUntil: newPost.promotedUntil ? new Date(newPost.promotedUntil) : null
+     };
+     if (parseInt(newPost.type) === 2 && newPost.promoDetails.discount > 0) {
+       postData.promoDetails = {
+         discount: parseInt(newPost.promoDetails.discount),
+         validUntil: newPost.promoDetails.validUntil ? new Date(newPost.promoDetails.validUntil) : null
+       };
+     }
+     if (parseInt(newPost.type) === 1 && (newPost.eventDetails.location || newPost.eventDetails.startTime)) {
+       postData.eventDetails = {
+         location: newPost.eventDetails.location || '',
+         startTime: newPost.eventDetails.startTime ? new Date(newPost.eventDetails.startTime) : null,
+         endTime: newPost.eventDetails.endTime ? new Date(newPost.eventDetails.endTime) : null
+       };
+     }
+     await addDoc(collection(db, 'posts'), postData);
+     setShowAddPost(false);
+     setNewPost({
+       title: '', description: '', imageUrl: '', type: 0, authorPhone: '',
+       postValidUntil: '', promotedUntil: '',
+       promoDetails: { discount: 0, validUntil: '' },
+       eventDetails: { location: '', startTime: '', endTime: '' }
+     });
+     loadData();
+   };
 
   const handleUpdateUser = async (userId, updatedData) => {
     const dataToUpdate = {
@@ -297,16 +372,56 @@ export default function AdminPanel() {
       return;
     }
     
-    await addDoc(collection(db, 'notifications'), {
-      title: notification.title,
-      message: notification.message,
-      createdAt: new Date(),
-      sentBy: user.uid
-    });
-    
-    setShowNotificationForm(false);
-    setNotification({ title: '', message: '' });
-    alert('Уведомление отправлено!');
+    try {
+      // Сохраняем уведомление в Firestore
+      const notificationDoc = await addDoc(collection(db, 'notifications'), {
+        title: notification.title,
+        message: notification.message,
+        topic: 'all',
+        createdAt: new Date(),
+        sentBy: user.uid,
+        sent: false
+      });
+      
+      // Отправляем через Cloud Function
+      // Вам нужно создать Cloud Function, которая будет триггериться на создание документа
+      // или вызывать HTTP Cloud Function напрямую
+      
+      // Пример вызова HTTP Cloud Function:
+      try {
+        const response = await fetch('YOUR_CLOUD_FUNCTION_URL', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            topic: 'all',
+            title: notification.title,
+            body: notification.message,
+            notificationId: notificationDoc.id
+          })
+        });
+        
+        if (response.ok) {
+          await updateDoc(doc(db, 'notifications', notificationDoc.id), {
+            sent: true,
+            sentAt: new Date()
+          });
+          alert('✅ Уведомление успешно отправлено всем пользователям!');
+        } else {
+          throw new Error('Failed to send notification');
+        }
+      } catch (error) {
+        console.error('Error calling cloud function:', error);
+        alert('⚠️ Уведомление сохранено в базе, но не отправлено. Проверьте Cloud Function.');
+      }
+      
+      setShowNotificationForm(false);
+      setNotification({ title: '', message: '' });
+    } catch (error) {
+      console.error('Error sending notification:', error);
+      alert('Ошибка при отправке уведомления');
+    }
   };
 
   const filteredPosts = posts.filter(post => {
@@ -530,252 +645,137 @@ export default function AdminPanel() {
           </div>
 
           <div className="p-6">
-            {activeTab === 'posts' && (
-              <div>
-                <div className="mb-6 space-y-4">
-                  <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
-                    <h2 className="text-2xl font-bold text-slate-800">Управление постами</h2>
-                    <button
-                      onClick={() => setShowAddPost(true)}
-                      className="flex items-center gap-2 bg-gradient-to-r from-green-600 to-emerald-600 text-white px-5 py-2.5 rounded-xl hover:from-green-700 hover:to-emerald-700 transition-all shadow-lg hover:shadow-xl"
-                    >
-                      <Plus size={20} />
-                      Добавить пост
-                    </button>
-                  </div>
-
-                  <div className="flex flex-col sm:flex-row gap-3">
-                    <div className="flex-1 relative">
-                      <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400" size={20} />
-                      <input
-                        type="text"
-                        placeholder="Поиск по названию или описанию..."
-                        value={searchTerm}
-                        onChange={(e) => setSearchTerm(e.target.value)}
-                        className="w-full pl-11 pr-4 py-3 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-                      />
-                    </div>
-                    <div className="relative">
-                      <Filter className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400" size={20} />
-                      <select
-                        value={filterType}
-                        onChange={(e) => setFilterType(e.target.value)}
-                        className="pl-11 pr-8 py-3 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent appearance-none bg-white transition cursor-pointer"
-                      >
-                        <option value="all">Все типы</option>
-                        <option value="0">Обычный</option>
-                        <option value="1">VIP</option>
-                        <option value="2">Премиум</option>
-                      </select>
-                    </div>
-                  </div>
-                </div>
-
-                {showAddPost && (
-                  <div className="bg-gradient-to-br from-blue-50 to-purple-50 p-6 rounded-2xl mb-6 border-2 border-blue-100 shadow-lg">
-                    <h3 className="text-xl font-bold mb-4 text-slate-800">Новый пост</h3>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <input
-                        type="text"
-                        placeholder="Заголовок *"
-                        value={newPost.title}
-                        onChange={(e) => setNewPost({ ...newPost, title: e.target.value })}
-                        className="px-4 py-3 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                      />
-                      <input
-                        type="text"
-                        placeholder="Телефон автора"
-                        value={newPost.authorPhone}
-                        onChange={(e) => setNewPost({ ...newPost, authorPhone: e.target.value })}
-                        className="px-4 py-3 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                      />
-                      <textarea
-                        placeholder="Описание *"
-                        value={newPost.description}
-                        onChange={(e) => setNewPost({ ...newPost, description: e.target.value })}
-                        className="md:col-span-2 px-4 py-3 border-2 border-slate-200 rounded-xl h-32 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                      />
-                      <input
-                        type="text"
-                        placeholder="URL изображения"
-                        value={newPost.imageUrl}
-                        onChange={(e) => setNewPost({ ...newPost, imageUrl: e.target.value })}
-                        className="md:col-span-2 px-4 py-3 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                      />
-                      <select
-                        value={newPost.type}
-                        onChange={(e) => setNewPost({ ...newPost, type: e.target.value })}
-                        className="px-4 py-3 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                      >
-                        <option value="0">Обычный</option>
-                        <option value="1">VIP</option>
-                        <option value="2">Премиум</option>
-                      </select>
-                      <input
-                        type="datetime-local"
-                        placeholder="Действителен до"
-                        value={newPost.postValidUntil}
-                        onChange={(e) => setNewPost({ ...newPost, postValidUntil: e.target.value })}
-                        className="px-4 py-3 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                      />
-                      <input
-                        type="datetime-local"
-                        placeholder="Продвигается до"
-                        value={newPost.promotedUntil}
-                        onChange={(e) => setNewPost({ ...newPost, promotedUntil: e.target.value })}
-                        className="md:col-span-2 px-4 py-3 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                      />
-                    </div>
-                    <div className="flex gap-3 mt-4">
-                      <button
-                        onClick={handleAddPost}
-                        className="flex items-center gap-2 bg-gradient-to-r from-green-600 to-emerald-600 text-white px-6 py-3 rounded-xl hover:from-green-700 hover:to-emerald-700 transition shadow-lg"
-                      >
-                        <Check size={18} />
-                        Создать
-                      </button>
-                      <button
-                        onClick={() => setShowAddPost(false)}
-                        className="flex items-center gap-2 bg-slate-400 text-white px-6 py-3 rounded-xl hover:bg-slate-500 transition"
-                      >
-                        <X size={18} />
-                        Отмена
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                <div className="grid gap-4">
-                  {filteredPosts.map((post) => (
-                    <div key={post.id} className="bg-white border-2 border-slate-200 rounded-2xl p-6 hover:shadow-xl transition-all hover:border-blue-200">
-                      {editingPost?.id === post.id ? (
-                        <div className="space-y-4">
-                          <input
-                            type="text"
-                            value={editingPost.title}
-                            onChange={(e) => setEditingPost({ ...editingPost, title: e.target.value })}
-                            className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl font-semibold"
-                          />
-                          <textarea
-                            value={editingPost.description}
-                            onChange={(e) => setEditingPost({ ...editingPost, description: e.target.value })}
-                            className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl h-24"
-                          />
-                          <input
-                            type="text"
-                            placeholder="URL изображения"
-                            value={editingPost.imageUrl || ''}
-                            onChange={(e) => setEditingPost({ ...editingPost, imageUrl: e.target.value })}
-                            className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl"
-                          />
-                          <input
-                            type="text"
-                            placeholder="Телефон автора"
-                            value={editingPost.authorPhone || ''}
-                            onChange={(e) => setEditingPost({ ...editingPost, authorPhone: e.target.value })}
-                            className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl"
-                          />
-                          <select
-                            value={editingPost.type}
-                            onChange={(e) => setEditingPost({ ...editingPost, type: parseInt(e.target.value) })}
-                            className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl"
-                          >
-                            <option value="0">Обычный</option>
-                            <option value="1">VIP</option>
-                            <option value="2">Премиум</option>
-                          </select>
-                          <div className="flex gap-3">
-                            <button
-                              onClick={() => handleUpdatePost(post.id, editingPost)}
-                              className="flex items-center gap-2 bg-gradient-to-r from-green-600 to-emerald-600 text-white px-5 py-2.5 rounded-xl hover:from-green-700 hover:to-emerald-700 transition shadow-lg"
-                            >
-                              <Check size={18} />
-                              Сохранить
-                            </button>
-                            <button
-                              onClick={() => setEditingPost(null)}
-                              className="flex items-center gap-2 bg-slate-400 text-white px-5 py-2.5 rounded-xl hover:bg-slate-500 transition"
-                            >
-                              <X size={18} />
-                              Отмена
-                            </button>
-                          </div>
-                        </div>
-                      ) : (
-                        <div>
-                          <div className="flex items-start justify-between mb-3">
-                            <div className="flex-1">
-                              <div className="flex items-center gap-3 mb-2">
-                                <h3 className="text-xl font-bold text-slate-800">{post.title}</h3>
-                                <span className={`px-3 py-1 rounded-full text-xs font-semibold ${POST_TYPES[post.type]?.color || POST_TYPES[0].color}`}>
-                                  {POST_TYPES[post.type]?.label || POST_TYPES[0].label}
-                                </span>
+             {activeTab === 'posts' && (
+                          <div>
+                            <div className="flex justify-between mb-6">
+                              <h2 className="text-2xl font-bold">Управление постами</h2>
+                              <button onClick={() => setShowAddPost(true)} className="bg-green-600 text-white px-5 py-2 rounded-xl flex items-center gap-2">
+                                <Plus size={20} />Добавить
+                              </button>
+                            </div>
+                            <div className="flex gap-3 mb-6">
+                              <div className="flex-1 relative">
+                                <Search className="absolute left-3 top-3 text-slate-400" size={20} />
+                                <input type="text" placeholder="Поиск..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-11 pr-4 py-3 border-2 rounded-xl" />
                               </div>
-                              <p className="text-slate-600 mb-3">{post.description}</p>
-                              {post.imageUrl && (
-                                <div className="mb-3 flex items-center gap-2 text-sm text-blue-600">
-                                  <ImageIcon size={16} />
-                                  <a href={post.imageUrl} target="_blank" rel="noopener noreferrer" className="hover:underline">
-                                    Посмотреть изображение
-                                  </a>
+                              <select value={filterType} onChange={(e) => setFilterType(e.target.value)} className="px-4 py-3 border-2 rounded-xl">
+                                <option value="all">Все типы</option>
+                                <option value="0">Новость</option>
+                                <option value="1">Событие</option>
+                                <option value="2">Реклама</option>
+                              </select>
+                            </div>
+                            {showAddPost && (
+                              <div className="bg-blue-50 p-6 rounded-2xl mb-6">
+                                <h3 className="text-xl font-bold mb-4">Новый пост</h3>
+                                <div className="space-y-3">
+                                  <input type="text" placeholder="Заголовок *" value={newPost.title} onChange={(e) => setNewPost({ ...newPost, title: e.target.value })} className="w-full px-4 py-3 border-2 rounded-xl" />
+                                  <textarea placeholder="Описание *" value={newPost.description} onChange={(e) => setNewPost({ ...newPost, description: e.target.value })} className="w-full px-4 py-3 border-2 rounded-xl h-24" />
+                                  <div className="space-y-3">
+                                    <div className="flex gap-3">
+                                      <input type="text" placeholder="URL изображения" value={newPost.imageUrl} onChange={(e) => setNewPost({ ...newPost, imageUrl: e.target.value })} className="flex-1 px-4 py-3 border-2 rounded-xl" />
+                                      <label className="relative cursor-pointer">
+                                        <input type="file" accept="image/*" onChange={(e) => handleImageChange(e, false)} className="hidden" disabled={uploadingImage} />
+                                        <div className={`flex items-center gap-2 px-4 py-3 rounded-xl font-semibold ${uploadingImage ? 'bg-slate-300 text-slate-500' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>
+                                          <Upload size={20} />{uploadingImage ? 'Загрузка...' : 'Загрузить'}
+                                        </div>
+                                      </label>
+                                    </div>
+                                    {newPost.imageUrl && (
+                                      <div className="relative">
+                                        <img src={newPost.imageUrl} alt="Preview" className="w-full h-48 object-cover rounded-xl border-2" />
+                                        <button onClick={() => setNewPost({ ...newPost, imageUrl: '' })} className="absolute top-2 right-2 bg-red-600 text-white p-2 rounded-lg">
+                                          <X size={16} />
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                  <select value={newPost.type} onChange={(e) => setNewPost({ ...newPost, type: e.target.value })} className="w-full px-4 py-3 border-2 rounded-xl">
+                                    <option value="0">📰 Новость</option>
+                                    <option value="1">📅 Событие</option>
+                                    <option value="2">📢 Реклама</option>
+                                  </select>
+                                  {parseInt(newPost.type) === 1 && (
+                                    <div className="p-4 bg-green-50 rounded-xl">
+                                      <input type="text" placeholder="Локация" value={newPost.eventDetails.location} onChange={(e) => setNewPost({ ...newPost, eventDetails: { ...newPost.eventDetails, location: e.target.value }})} className="w-full px-4 py-2 border-2 rounded-lg mb-2" />
+                                      <input type="datetime-local" value={newPost.eventDetails.startTime} onChange={(e) => setNewPost({ ...newPost, eventDetails: { ...newPost.eventDetails, startTime: e.target.value }})} className="w-full px-4 py-2 border-2 rounded-lg" />
+                                    </div>
+                                  )}
+                                  {parseInt(newPost.type) === 2 && (
+                                    <div className="p-4 bg-amber-50 rounded-xl">
+                                      <input type="number" placeholder="Скидка %" value={newPost.promoDetails.discount} onChange={(e) => setNewPost({ ...newPost, promoDetails: { ...newPost.promoDetails, discount: e.target.value }})} className="w-full px-4 py-2 border-2 rounded-lg" />
+                                    </div>
+                                  )}
                                 </div>
-                              )}
-                              <div className="flex flex-wrap gap-3 text-sm text-slate-500">
-                                {post.authorPhone && (
-                                  <span className="flex items-center gap-1">
-                                    <Phone size={14} />
-                                    {post.authorPhone}
-                                  </span>
-                                )}
-                                {post.created && (
-                                  <span className="flex items-center gap-1">
-                                    <Calendar size={14} />
-                                    {new Date(post.created.seconds * 1000).toLocaleDateString('ru-RU')}
-                                  </span>
-                                )}
-                                {post.likeList && post.likeList.length > 0 && (
-                                  <span className="flex items-center gap-1 text-red-500">
-                                    ❤️ {post.likeList.length}
-                                  </span>
-                                )}
+                                <div className="flex gap-3 mt-4">
+                                  <button onClick={handleAddPost} className="bg-green-600 text-white px-6 py-2 rounded-xl">Создать</button>
+                                  <button onClick={() => setShowAddPost(false)} className="bg-slate-400 text-white px-6 py-2 rounded-xl">Отмена</button>
+                                </div>
                               </div>
-                              {post.promotedUntil && (
-                                <div className="mt-2 inline-flex items-center gap-2 bg-amber-50 text-amber-700 px-3 py-1 rounded-lg text-xs font-semibold">
-                                  <TrendingUp size={14} />
-                                  Продвигается
+                            )}
+                            <div className="space-y-4">
+                              {filteredPosts.map(post => (
+                                <div key={post.id} className="border-2 rounded-2xl p-6">
+                                  {editingPost?.id === post.id ? (
+                                    <div className="space-y-3">
+                                      <input type="text" value={editingPost.title} onChange={(e) => setEditingPost({ ...editingPost, title: e.target.value })} className="w-full px-4 py-3 border-2 rounded-xl" />
+                                      <textarea value={editingPost.description} onChange={(e) => setEditingPost({ ...editingPost, description: e.target.value })} className="w-full px-4 py-3 border-2 rounded-xl h-24" />
+                                      <div className="space-y-3">
+                                        <div className="flex gap-3">
+                                          <input type="text" placeholder="URL изображения" value={editingPost.imageUrl || ''} onChange={(e) => setEditingPost({ ...editingPost, imageUrl: e.target.value })} className="flex-1 px-4 py-3 border-2 rounded-xl" />
+                                          <label className="relative cursor-pointer">
+                                            <input type="file" accept="image/*" onChange={(e) => handleImageChange(e, true)} className="hidden" disabled={uploadingImage} />
+                                            <div className={`flex items-center gap-2 px-4 py-3 rounded-xl font-semibold ${uploadingImage ? 'bg-slate-300 text-slate-500' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>
+                                              <Upload size={20} />{uploadingImage ? 'Загрузка...' : 'Загрузить'}
+                                            </div>
+                                          </label>
+                                        </div>
+                                        {editingPost.imageUrl && (
+                                          <div className="relative">
+                                            <img src={editingPost.imageUrl} alt="Preview" className="w-full h-48 object-cover rounded-xl border-2" />
+                                            <button onClick={() => setEditingPost({ ...editingPost, imageUrl: '' })} className="absolute top-2 right-2 bg-red-600 text-white p-2 rounded-lg">
+                                              <X size={16} />
+                                            </button>
+                                          </div>
+                                        )}
+                                      </div>
+                                      <select value={editingPost.type} onChange={(e) => setEditingPost({ ...editingPost, type: parseInt(e.target.value) })} className="w-full px-4 py-3 border-2 rounded-xl">
+                                        <option value="0">📰 Новость</option>
+                                        <option value="1">📅 Событие</option>
+                                        <option value="2">📢 Реклама</option>
+                                      </select>
+                                      <div className="flex gap-3">
+                                        <button onClick={() => handleUpdatePost(post.id, editingPost)} className="bg-green-600 text-white px-5 py-2 rounded-xl flex items-center gap-2">
+                                          <Check size={18} />Сохранить
+                                        </button>
+                                        <button onClick={() => setEditingPost(null)} className="bg-slate-400 text-white px-5 py-2 rounded-xl flex items-center gap-2">
+                                          <X size={18} />Отмена
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <div>
+                                      <h3 className="text-xl font-bold mb-2">{post.title}</h3>
+                                      <p className="text-slate-600 mb-3">{post.description}</p>
+                                      {post.imageUrl && (
+                                        <img src={post.imageUrl} alt={post.title} className="w-full max-h-64 object-cover rounded-xl border-2 mb-3" />
+                                      )}
+                                      <span className={`px-3 py-1 rounded-full text-xs ${POST_TYPES[post.type]?.color}`}>{POST_TYPES[post.type]?.icon} {POST_TYPES[post.type]?.label}</span>
+                                      <div className="flex gap-3 mt-4">
+                                        <button onClick={() => setEditingPost(post)} className="bg-blue-600 text-white px-4 py-2 rounded-xl flex items-center gap-2">
+                                          <Edit size={18} />Редактировать
+                                        </button>
+                                        <button onClick={() => handleDeletePost(post.id)} className="bg-red-600 text-white px-4 py-2 rounded-xl flex items-center gap-2">
+                                          <Trash2 size={18} />Удалить
+                                        </button>
+                                      </div>
+                                    </div>
+                                  )}
                                 </div>
-                              )}
+                              ))}
                             </div>
                           </div>
-                          <div className="flex gap-3">
-                            <button
-                              onClick={() => setEditingPost(post)}
-                              className="flex items-center gap-2 bg-gradient-to-r from-blue-600 to-purple-600 text-white px-4 py-2 rounded-xl hover:from-blue-700 hover:to-purple-700 transition shadow-md"
-                            >
-                              <Edit size={18} />
-                              Редактировать
-                            </button>
-                            <button
-                              onClick={() => handleDeletePost(post.id)}
-                              className="flex items-center gap-2 bg-gradient-to-r from-red-600 to-rose-600 text-white px-4 py-2 rounded-xl hover:from-red-700 hover:to-rose-700 transition shadow-md"
-                            >
-                              <Trash2 size={18} />
-                              Удалить
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                  {filteredPosts.length === 0 && (
-                    <div className="text-center py-12 text-slate-500">
-                      <FileText size={48} className="mx-auto mb-3 opacity-30" />
-                      <p>Посты не найдены</p>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
+                        )}
 
             {activeTab === 'users' && (
               <div>
